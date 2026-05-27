@@ -21,6 +21,7 @@ public class SwipeServlet extends HttpServlet {
     private final SwipeDao swipeDao = new SwipeDao();
     private final ProfileDao profileDao = new ProfileDao();
     private final UserInterestDao userInterestDao = new UserInterestDao();
+    private final OnboardingQuestionDao onboardingQuestionDao = new OnboardingQuestionDao();
     private final NotificationDao notificationDao = new NotificationDao();
     private final MatchService matchService = new MatchService();
 
@@ -43,9 +44,14 @@ public class SwipeServlet extends HttpServlet {
                 resp.sendRedirect(req.getContextPath() + "/onboarding?step=1");
                 return;
             }
+            int questionCount = onboardingQuestionDao.countActiveQuestions(c);
+            int answerCount = onboardingQuestionDao.countAnswersForUser(c, userId);
+            if (questionCount > 0 && answerCount < questionCount) {
+                resp.sendRedirect(req.getContextPath() + "/onboarding?step=4&idx=0");
+                return;
+            }
 
             Optional<BrowseDao.Candidate> cand = Optional.empty();
-            // Try a few times to satisfy simple age filter without complex SQL
             for (int i = 0; i < 8; i++) {
                 Optional<BrowseDao.Candidate> tmp = browseDao.pickNextCandidate(c, userId);
                 if (tmp.isEmpty()) break;
@@ -53,8 +59,6 @@ public class SwipeServlet extends HttpServlet {
                     cand = tmp;
                     break;
                 } else {
-                    // If it doesn't match the filter, we "NOPE" it implicitly by recording a NOPE
-                    // so it doesn't keep coming back while user filters.
                     swipeDao.upsertSwipe(c, userId, tmp.get().getUserId(), SwipeDao.Decision.NOPE);
                 }
             }
@@ -68,17 +72,20 @@ public class SwipeServlet extends HttpServlet {
             BrowseDao.Candidate p = cand.get();
             Set<String> my = userInterestDao.setLabelsForUser(c, userId);
             Set<String> other = userInterestDao.setLabelsForUser(c, p.getUserId());
+            Set<String> myPrefs = onboardingQuestionDao.setScoreTagsForUser(c, userId);
+            Set<String> otherPrefs = onboardingQuestionDao.setScoreTagsForUser(c, p.getUserId());
 
             int myAge = ageFromBirth(me.get().getBirthdate());
             int diff = Math.abs(myAge - p.getAge());
             boolean sameCity = me.get().getCity() != null && p.getCity() != null && me.get().getCity().equalsIgnoreCase(p.getCity());
 
-            MatchService.MatchResult result = matchService.compute(my, other, diff, sameCity);
+            MatchService.MatchResult result = matchService.compute(my, other, myPrefs, otherPrefs, diff, sameCity);
 
             req.setAttribute("pageTitle", "Swipe");
             req.setAttribute("candidate", p);
             req.setAttribute("matchPercent", result.getPercent());
             req.setAttribute("commonInterests", result.getCommonInterests());
+            req.setAttribute("commonPreferenceTags", result.getCommonPreferenceTags());
             req.getRequestDispatcher("/WEB-INF/views/app/swipe.jsp").forward(req, resp);
         } catch (SQLException e) {
             throw new ServletException(e);

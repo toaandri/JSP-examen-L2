@@ -54,6 +54,14 @@
                             </c:forEach>
                         </div>
                     </c:if>
+                    <c:if test="${not empty commonPreferenceTags}">
+                        <div class="commonTitle">Preferences similaires</div>
+                        <div class="chips">
+                            <c:forEach var="t" items="${commonPreferenceTags}">
+                                <div class="pill"><c:out value="${t}" /></div>
+                            </c:forEach>
+                        </div>
+                    </c:if>
                 </div>
             </div>
 

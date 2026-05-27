@@ -7,6 +7,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import mg.univ.tinder.dao.DbUtil;
 import mg.univ.tinder.dao.InterestDao;
+import mg.univ.tinder.dao.OnboardingQuestionDao;
 import mg.univ.tinder.dao.ProfileDao;
 import mg.univ.tinder.web.SessionKeys;
 
@@ -15,20 +16,54 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 @WebServlet(name = "OnboardingServlet", urlPatterns = {"/onboarding"})
 public class OnboardingServlet extends HttpServlet {
     private final ProfileDao profileDao = new ProfileDao();
     private final InterestDao interestDao = new InterestDao();
+    private final OnboardingQuestionDao onboardingQuestionDao = new OnboardingQuestionDao();
 
     @Override
     protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
         int step = parseStep(req.getParameter("step"), 1);
-        long userId = (long) req.getSession().getAttribute(SessionKeys.USER_ID);
+        int idx = parseStep(req.getParameter("idx"), 0);
 
         try (Connection c = DbUtil.getConnection()) {
-            if (step == 4) {
+            if (step == 3) {
+                List<InterestDao.Interest> interests = interestDao.listAll(c);
+                if (interests.isEmpty()) {
+                    resp.sendRedirect(req.getContextPath() + "/onboarding?step=4");
+                    return;
+                }
+                if (idx < 0) idx = 0;
+                if (idx >= interests.size()) {
+                    resp.sendRedirect(req.getContextPath() + "/onboarding?step=4&idx=0");
+                    return;
+                }
+                req.setAttribute("interest", interests.get(idx));
+                req.setAttribute("idx", idx);
+                req.setAttribute("total", interests.size());
+                req.setAttribute("pickedInterestIds", getPickedInterestIds(req));
+            } else if (step == 4) {
+                List<OnboardingQuestionDao.Question> questions = onboardingQuestionDao.listActiveQuestions(c);
+                if (questions.isEmpty()) {
+                    resp.sendRedirect(req.getContextPath() + "/onboarding?step=5");
+                    return;
+                }
+                if (idx < 0) idx = 0;
+                if (idx >= questions.size()) {
+                    resp.sendRedirect(req.getContextPath() + "/onboarding?step=5");
+                    return;
+                }
+                OnboardingQuestionDao.Question q = questions.get(idx);
+                req.setAttribute("question", q);
+                req.setAttribute("options", onboardingQuestionDao.listOptionsForQuestion(c, q.getId()));
+                req.setAttribute("idx", idx);
+                req.setAttribute("total", questions.size());
+            } else if (step == 5) {
                 req.setAttribute("interests", interestDao.listAll(c));
             }
             req.setAttribute("step", step);
@@ -79,24 +114,53 @@ public class OnboardingServlet extends HttpServlet {
             }
 
             if (step == 3) {
-                String[] ids = req.getParameterValues("interestId");
-                List<Long> interestIds = new ArrayList<>();
-                if (ids != null) {
-                    for (String s : ids) {
-                        try { interestIds.add(Long.parseLong(s)); } catch (NumberFormatException ignored) {}
-                    }
+                long interestId = parseLong(req.getParameter("interestId"), -1L);
+                String decision = trim(req.getParameter("decision"));
+                int idx = parseStep(req.getParameter("idx"), 0);
+
+                Set<Long> picked = getPickedInterestIds(req);
+                if (interestId > 0 && "LIKE".equalsIgnoreCase(decision)) {
+                    picked.add(interestId);
                 }
-                interestDao.replaceUserInterests(c, userId, interestIds);
-                c.commit();
-                resp.sendRedirect(req.getContextPath() + "/onboarding?step=4");
+
+                List<InterestDao.Interest> interests = interestDao.listAll(c);
+                int next = idx + 1;
+                if (next >= interests.size()) {
+                    interestDao.replaceUserInterests(c, userId, new ArrayList<>(picked));
+                    c.commit();
+                    resp.sendRedirect(req.getContextPath() + "/onboarding?step=4&idx=0");
+                } else {
+                    c.commit();
+                    resp.sendRedirect(req.getContextPath() + "/onboarding?step=3&idx=" + next);
+                }
                 return;
             }
 
             if (step == 4) {
+                long questionId = parseLong(req.getParameter("questionId"), -1L);
+                long optionId = parseLong(req.getParameter("optionId"), -1L);
+                int idx = parseStep(req.getParameter("idx"), 0);
+
+                if (questionId > 0 && optionId > 0) {
+                    onboardingQuestionDao.upsertUserAnswer(c, userId, questionId, optionId);
+                }
+                List<OnboardingQuestionDao.Question> questions = onboardingQuestionDao.listActiveQuestions(c);
+                int next = idx + 1;
+                c.commit();
+                if (next >= questions.size()) {
+                    resp.sendRedirect(req.getContextPath() + "/onboarding?step=5");
+                } else {
+                    resp.sendRedirect(req.getContextPath() + "/onboarding?step=4&idx=" + next);
+                }
+                return;
+            }
+
+            if (step == 5) {
                 String bio = trim(req.getParameter("bio"));
                 String city = trim(req.getParameter("city"));
                 profileDao.updateBioCity(c, userId, bio, city);
                 c.commit();
+                req.getSession().removeAttribute("pickedInterestIds");
                 resp.sendRedirect(req.getContextPath() + "/app/swipe");
                 return;
             }
@@ -119,6 +183,10 @@ public class OnboardingServlet extends HttpServlet {
         }
     }
 
+    private static long parseLong(String s, long fallback) {
+        try { return Long.parseLong(s); } catch (Exception e) { return fallback; }
+    }
+
     private static LocalDate parseDate(String s) {
         try {
             if (s == null || s.isBlank()) return null;
@@ -132,6 +200,15 @@ public class OnboardingServlet extends HttpServlet {
         if (s == null) return null;
         s = s.trim();
         return s.isEmpty() ? null : s;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Set<Long> getPickedInterestIds(HttpServletRequest req) {
+        Object raw = req.getSession().getAttribute("pickedInterestIds");
+        if (raw instanceof Set) return (Set<Long>) raw;
+        Set<Long> s = new HashSet<>();
+        req.getSession().setAttribute("pickedInterestIds", s);
+        return s;
     }
 }
 

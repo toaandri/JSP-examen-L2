@@ -35,6 +35,31 @@ CREATE TABLE IF NOT EXISTS user_interest (
     PRIMARY KEY (user_id, interest_id)
 );
 
+CREATE TABLE IF NOT EXISTS onboarding_question (
+    id             BIGSERIAL PRIMARY KEY,
+    question_key   VARCHAR(80) NOT NULL UNIQUE,
+    label          VARCHAR(200) NOT NULL,
+    question_order INT NOT NULL,
+    is_active      BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+CREATE TABLE IF NOT EXISTS onboarding_option (
+    id             BIGSERIAL PRIMARY KEY,
+    question_id    BIGINT NOT NULL REFERENCES onboarding_question(id) ON DELETE CASCADE,
+    label          VARCHAR(120) NOT NULL,
+    score_tag      VARCHAR(80) NOT NULL,
+    option_order   INT NOT NULL,
+    UNIQUE (question_id, label)
+);
+
+CREATE TABLE IF NOT EXISTS user_onboarding_answer (
+    user_id        BIGINT NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+    question_id    BIGINT NOT NULL REFERENCES onboarding_question(id) ON DELETE CASCADE,
+    option_id      BIGINT NOT NULL REFERENCES onboarding_option(id) ON DELETE CASCADE,
+    answered_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, question_id)
+);
+
 CREATE TABLE IF NOT EXISTS swipe (
     id            BIGSERIAL PRIMARY KEY,
     from_user_id  BIGINT NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
@@ -85,6 +110,9 @@ CREATE TABLE IF NOT EXISTS block (
 -- Helpful indexes
 CREATE INDEX IF NOT EXISTS idx_profile_city ON profile(city);
 CREATE INDEX IF NOT EXISTS idx_user_interest_interest ON user_interest(interest_id);
+CREATE INDEX IF NOT EXISTS idx_onboarding_question_order ON onboarding_question(question_order);
+CREATE INDEX IF NOT EXISTS idx_onboarding_option_question ON onboarding_option(question_id, option_order);
+CREATE INDEX IF NOT EXISTS idx_user_answer_user ON user_onboarding_answer(user_id, answered_at DESC);
 CREATE INDEX IF NOT EXISTS idx_swipe_from ON swipe(from_user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_swipe_to ON swipe(to_user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_match_user_a ON app_match(user_a_id, created_at DESC);
